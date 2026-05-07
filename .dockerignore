@@ -1,0 +1,15 @@
+.git
+.gitignore
+Dockerfile
+docker-compose.yml
+.dockerignore
+kubernetes/
+scripts/
+evidence/
+*.md
+**/*_test.go
+*.test
+*.out
+.DS_Store
+.vscode/
+.idea/
