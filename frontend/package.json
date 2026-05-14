@@ -20,6 +20,9 @@
     "test": "react-scripts test",
     "lint": "echo 'lint skipped'"
   },
+  "jest": {
+    "setupFilesAfterFramework": ["@testing-library/jest-dom/extend-expect"]
+  },
   "eslintConfig": {
     "extends": ["react-app"]
   },
