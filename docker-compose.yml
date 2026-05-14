@@ -1,0 +1,54 @@
+version: "3.9"
+# Local development stack — mirrors production topology.
+# Usage: docker compose up
+# The backend connects to Atlas using MONGO_URI from your .env file.
+
+services:
+  backend:
+    build:
+      context: ./Server
+      dockerfile: Dockerfile
+    container_name: much-to-do-backend
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      ENVIRONMENT: "development"
+      MONGO_URI: "${MONGO_URI}"      # set in .env or shell
+      REDIS_ADDR: "redis:6379"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    image: node:20-alpine
+    container_name: much-to-do-frontend
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    environment:
+      REACT_APP_API_URL: "http://localhost:8080"
+      CHOKIDAR_USEPOLLING: "true"   # for file-watch inside Docker
+    command: sh -c "npm install && npm start"
+    depends_on:
+      - backend
+
+  redis:
+    image: redis:7-alpine
+    container_name: much-to-do-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

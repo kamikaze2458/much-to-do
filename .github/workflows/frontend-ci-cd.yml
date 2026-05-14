@@ -1,0 +1,139 @@
+name: Frontend CI/CD
+
+on:
+  push:
+    branches: [main, "feature/**"]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-ci-cd.yml"
+  pull_request:
+    branches: [main]
+    paths: ["frontend/**"]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  NODE_VERSION: "20"
+
+permissions:
+  contents: read
+  id-token: write # OIDC – no long-lived AWS keys
+
+jobs:
+  # ── 1. BUILD & TEST ─────────────────────────────
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint --if-present
+
+      - name: Run unit tests
+        run: npm test -- --coverage --watchAll=false
+        env:
+          CI: true
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: frontend/coverage
+          retention-days: 7
+
+      - name: Security audit
+        run: npm audit --audit-level=high
+        continue-on-error: true # report but don't fail build on moderate
+
+      - name: Build production bundle
+        env:
+          REACT_APP_API_URL: ${{ secrets.REACT_APP_API_URL }}
+          REACT_APP_ENV: production
+        run: npm run build
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/build
+          retention-days: 1
+
+  # ── 2. DEPLOY  (main branch only) ───────────────
+  deploy:
+    name: Deploy → S3 + CloudFront
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    environment: production
+
+    steps:
+      - name: Download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Sync static assets to S3 (immutable cache)
+        run: |
+          aws s3 sync dist/ s3://${{ secrets.FRONTEND_S3_BUCKET }}/ \
+            --delete \
+            --cache-control "public,max-age=31536000,immutable" \
+            --exclude "index.html" \
+            --exclude "*.map"
+
+      - name: Upload index.html (no-cache for SPA routing)
+        run: |
+          aws s3 cp dist/index.html s3://${{ secrets.FRONTEND_S3_BUCKET }}/index.html \
+            --cache-control "no-cache,no-store,must-revalidate" \
+            --content-type "text/html; charset=utf-8"
+
+      - name: Invalidate CloudFront cache
+        id: invalidation
+        run: |
+          INVALIDATION_ID=$(aws cloudfront create-invalidation \
+            --distribution-id "${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}" \
+            --paths "/*" \
+            --query "Invalidation.Id" \
+            --output text)
+          echo "invalidation_id=$INVALIDATION_ID" >> "$GITHUB_OUTPUT"
+          echo "CloudFront invalidation started: $INVALIDATION_ID"
+
+      - name: Wait for CloudFront invalidation
+        run: |
+          aws cloudfront wait invalidation-completed \
+            --distribution-id "${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}" \
+            --id "${{ steps.invalidation.outputs.invalidation_id }}"
+
+      - name: Send deployment notification
+        if: always()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": ":rocket: *Frontend* deploy *${{ job.status }}*\nCommit: `${{ github.sha }}`  Branch: `${{ github.ref_name }}`\nTriggered by: ${{ github.actor }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

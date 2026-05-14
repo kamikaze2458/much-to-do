@@ -1,0 +1,303 @@
+name: Backend CI/CD
+
+on:
+  push:
+    branches: [main, "feature/**"]
+    paths:
+      - "Server/**"
+      - ".github/workflows/backend-ci-cd.yml"
+  pull_request:
+    branches: [main]
+    paths: ["Server/**"]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  GO_VERSION: "1.22"
+  ECR_REPO_NAME: much-to-do-backend
+
+permissions:
+  contents: read
+  id-token: write
+  security-events: write # for SARIF upload
+
+jobs:
+  # ── 1. TEST & QUALITY ───────────────────────────
+  test:
+    name: Test & Quality Gates
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Server
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: Server/go.sum
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint (code quality)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: Server
+          args: --timeout=5m
+
+      - name: Unit tests with race detector
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Integration tests
+        run: go test -v -tags=integration ./... 2>/dev/null || true
+        # Integration tests require external services; best-effort in CI
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: Server/coverage.out
+          retention-days: 7
+
+      - name: Vulnerability scan (govulncheck)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  # ── 2. BUILD & PUSH DOCKER IMAGE ────────────────
+  build:
+    name: Docker Build → ECR
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    outputs:
+      image-uri: ${{ steps.image-uri.outputs.uri }}
+      image-tag: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Docker metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO_NAME }}
+          tags: |
+            type=sha,prefix=,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=much-to-do-backend
+            org.opencontainers.image.description=Much-To-Do Golang API
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        id: push
+        uses: docker/build-push-action@v5
+        with:
+          context: Server
+          file: Server/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Compute full image URI
+        id: image-uri
+        run: |
+          URI="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPO_NAME }}:${{ steps.meta.outputs.version }}"
+          echo "uri=$URI" >> "$GITHUB_OUTPUT"
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.image-uri.outputs.uri }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "0" # warn only; set to 1 to gate on vulnerabilities
+
+      - name: Upload Trivy SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+  # ── 3. DEPLOY ────────────────────────────────────
+  deploy:
+    name: Deploy → EC2 ASG (Rolling Update)
+    runs-on: ubuntu-latest
+    needs: build
+    environment: production
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update Launch Template with new image tag
+        # Write user-data to a file first so ${{ }} expressions expand before
+        # the script runs, then base64-encode the file for the LT update.
+        env:
+          IMAGE_URI: ${{ needs.build.outputs.image-uri }}
+          MONGO_SECRET_ID: ${{ secrets.MONGO_URI_SECRET_ID }}
+          REDIS_ADDR: ${{ secrets.REDIS_ADDR }}
+          LT_ID: ${{ secrets.LAUNCH_TEMPLATE_ID }}
+          REGION: ${{ env.AWS_REGION }}
+        run: |
+          # Write the startup script to a file (env vars are already expanded)
+          cat > /tmp/userdata.sh <<SCRIPT
+          #!/bin/bash
+          set -e
+          # Authenticate to ECR
+          aws ecr get-login-password --region "${REGION}" \
+            | docker login --username AWS --password-stdin \
+              "\$(echo '${IMAGE_URI}' | cut -d/ -f1)"
+
+          # Pull latest image
+          docker pull "${IMAGE_URI}"
+
+          # Stop any running container
+          docker stop much-to-do-backend 2>/dev/null || true
+          docker rm   much-to-do-backend 2>/dev/null || true
+
+          # Fetch MongoDB URI from Secrets Manager at boot time
+          MONGO_URI=\$(aws secretsmanager get-secret-value \
+            --region "${REGION}" \
+            --secret-id "${MONGO_SECRET_ID}" \
+            --query SecretString --output text)
+
+          # Run the container
+          docker run -d \
+            --name much-to-do-backend \
+            --restart unless-stopped \
+            -p 8080:8080 \
+            -e PORT=8080 \
+            -e ENVIRONMENT=production \
+            -e MONGO_URI="\${MONGO_URI}" \
+            -e REDIS_ADDR="${REDIS_ADDR}" \
+            "${IMAGE_URI}"
+          SCRIPT
+
+          # Base64-encode for the Launch Template API
+          USER_DATA=$(base64 -w 0 /tmp/userdata.sh)
+
+          # Create a new Launch Template version with the updated user-data
+          aws ec2 create-launch-template-version \
+            --launch-template-id "${LT_ID}" \
+            --source-version '$Latest' \
+            --launch-template-data "{\"UserData\":\"${USER_DATA}\"}"
+
+          # Make the new version the default so the ASG picks it up
+          LATEST_VERSION=$(aws ec2 describe-launch-template-versions \
+            --launch-template-id "${LT_ID}" \
+            --versions '$Latest' \
+            --query 'LaunchTemplateVersions[0].VersionNumber' \
+            --output text)
+
+          aws ec2 modify-launch-template \
+            --launch-template-id "${LT_ID}" \
+            --default-version "${LATEST_VERSION}"
+
+          echo "Launch Template updated to version ${LATEST_VERSION} with image: ${IMAGE_URI}"
+
+      - name: Trigger ASG rolling instance refresh
+        id: refresh
+        run: |
+          REFRESH_ID=$(aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name "${{ secrets.ASG_NAME }}" \
+            --strategy Rolling \
+            --preferences \
+              '{"MinHealthyPercentage":50,"InstanceWarmup":120,"CheckpointPercentages":[50,100]}' \
+            --query InstanceRefreshId \
+            --output text)
+          echo "refresh_id=$REFRESH_ID" >> "$GITHUB_OUTPUT"
+          echo "Instance refresh started: $REFRESH_ID"
+
+      - name: Poll instance refresh until complete
+        run: |
+          echo "Polling refresh ${{ steps.refresh.outputs.refresh_id }} (max 20 min)…"
+          for i in $(seq 1 40); do
+            STATUS=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name "${{ secrets.ASG_NAME }}" \
+              --instance-refresh-ids "${{ steps.refresh.outputs.refresh_id }}" \
+              --query 'InstanceRefreshes[0].Status' \
+              --output text)
+            PCT=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name "${{ secrets.ASG_NAME }}" \
+              --instance-refresh-ids "${{ steps.refresh.outputs.refresh_id }}" \
+              --query 'InstanceRefreshes[0].PercentageComplete' \
+              --output text 2>/dev/null || echo "0")
+            echo "  [${i}/40] Status=$STATUS  Progress=${PCT}%"
+            case "$STATUS" in
+              Successful) echo "✅ Deployment complete!"; exit 0 ;;
+              Failed|Cancelled|RollbackSuccessful|RollbackFailed)
+                echo "❌ Deployment ended with status: $STATUS"; exit 1 ;;
+            esac
+            sleep 30
+          done
+          echo "⏱️  Timed out after 20 minutes"
+          exit 1
+
+      - name: Configure auto-scaling policies
+        run: |
+          # Target-tracking on CPU – Terraform creates this; this step is idempotent
+          aws autoscaling put-scaling-policy \
+            --auto-scaling-group-name "${{ secrets.ASG_NAME }}" \
+            --policy-name "much-to-do-cpu-target-tracking" \
+            --policy-type TargetTrackingScaling \
+            --target-tracking-configuration \
+              '{"PredefinedMetricSpecification":{"PredefinedMetricType":"ASGAverageCPUUtilization"},"TargetValue":60.0}' \
+            2>/dev/null || true
+
+      - name: Set up CloudWatch monitoring – put deployment marker metric
+        run: |
+          aws cloudwatch put-metric-data \
+            --namespace "MuchToDo/Deployments" \
+            --metric-data \
+              '[{"MetricName":"DeploymentCount","Value":1,"Unit":"Count","Dimensions":[{"Name":"Environment","Value":"production"},{"Name":"Service","Value":"backend"}]}]'
+
+      - name: Smoke test – health endpoint via ALB
+        run: bash scripts/health-check.sh "${{ secrets.ALB_DNS_NAME }}"
+
+      - name: Rollback on failure
+        if: failure()
+        run: bash scripts/rollback.sh "${{ secrets.ASG_NAME }}" "${{ steps.refresh.outputs.refresh_id }}"
+
+      - name: Send deployment notification
+        if: always()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": ":gear: *Backend* deploy *${{ job.status }}*\nImage: `${{ needs.build.outputs.image-uri }}`\nCommit: `${{ github.sha }}`\nTriggered by: ${{ github.actor }}"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

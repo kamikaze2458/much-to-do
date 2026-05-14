@@ -1,0 +1,16 @@
+# Source control
+.git
+.gitignore
+
+# Test & coverage
+*_test.go
+coverage.out
+*.coverprofile
+
+# Tooling / local
+.golangci.yml
+*.md
+
+# OS artifacts
+.DS_Store
+Thumbs.db
