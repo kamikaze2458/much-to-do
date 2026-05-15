@@ -124,7 +124,6 @@ jobs:
     name: Deploy → EC2 ASG (Rolling Update)
     runs-on: ubuntu-latest
     needs: build
-    environment: production
 
     steps:
       - name: Checkout repository
