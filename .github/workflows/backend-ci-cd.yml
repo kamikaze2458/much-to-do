@@ -184,6 +184,13 @@ jobs:
             --launch-template-id "${LT_ID}" \
             --default-version "${LATEST_VERSION}"
 
+      - name: Cancel any existing instance refresh
+        run: |
+          aws autoscaling cancel-instance-refresh \
+            --auto-scaling-group-name "${{ secrets.ASG_NAME }}" \
+            --region ${{ env.AWS_REGION }} 2>/dev/null || true
+          sleep 10
+
       - name: Trigger ASG rolling instance refresh
         id: refresh
         run: |
