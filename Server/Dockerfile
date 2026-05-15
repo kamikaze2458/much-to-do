@@ -14,7 +14,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     -ldflags="-s -w -extldflags=-static" \
     -trimpath \
     -o /bin/server \
-    ./cmd/...
+    ./cmd/api
 
 FROM gcr.io/distroless/static-debian12:nonroot
 
