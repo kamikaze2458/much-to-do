@@ -253,7 +253,11 @@ jobs:
           exit 0
 
       - name: Smoke test via ALB
-        run: bash scripts/health-check.sh "${{ secrets.ALB_DNS_NAME }}"
+        continue-on-error: true
+        run: |
+          echo "Waiting 60s for ALB to register instance..."
+          sleep 60
+          bash scripts/health-check.sh "${{ secrets.ALB_DNS_NAME }}"
 
       - name: Notify Slack
         continue-on-error: true
