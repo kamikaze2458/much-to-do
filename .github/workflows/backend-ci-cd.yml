@@ -227,6 +227,7 @@ jobs:
         run: bash scripts/health-check.sh "${{ secrets.ALB_DNS_NAME }}"
 
       - name: Notify Slack
+        continue-on-error: true
         if: always()
         uses: slackapi/slack-github-action@v1.26.0
         with:
