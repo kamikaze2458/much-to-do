@@ -212,7 +212,7 @@ jobs:
           aws autoscaling cancel-instance-refresh \
             --auto-scaling-group-name "${{ secrets.ASG_NAME }}" \
             --region ${{ env.AWS_REGION }} 2>/dev/null || true
-          sleep 10
+          sleep 60
 
       - name: Trigger ASG rolling instance refresh
         id: refresh
