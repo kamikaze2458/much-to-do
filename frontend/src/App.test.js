@@ -1,22 +1,14 @@
 import { render, screen } from '@testing-library/react';
 import App from './App';
 
-jest.mock('axios', () => ({
-  get: jest.fn(() => Promise.resolve({ data: [] })),
-  post: jest.fn(),
-  patch: jest.fn(),
-  delete: jest.fn(),
-}));
-
-test('renders Much To Do heading', async () => {
+test('renders Much To Do heading', () => {
   render(<App />);
   const heading = screen.getByText(/Much To Do/i);
   expect(heading).toBeTruthy();
 });
 
-test('renders add button', () => {
+test('renders login form by default', () => {
   render(<App />);
-  const button = screen.getByRole('button', { name: /add/i });
-  expect(button).toBeTruthy();
-  expect(button.disabled).toBe(true);
+  const loginButton = screen.getByRole('button', { name: /login/i });
+  expect(loginButton).toBeTruthy();
 });
