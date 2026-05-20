@@ -143,7 +143,8 @@ jobs:
           LT_ID: ${{ secrets.LAUNCH_TEMPLATE_ID }}
           REGION: ${{ env.AWS_REGION }}
         run: |
-          cat > /tmp/userdata.sh <<SCRIPT
+          # Write user-data script with literal values substituted
+          cat > /tmp/userdata.sh << ENDOFSCRIPT
           #!/bin/bash
           set -euo pipefail
           exec > /var/log/cloud-init-output.log 2>&1
@@ -151,20 +152,20 @@ jobs:
           dnf install -y docker
           systemctl enable --now docker
           echo "==> Authenticating to ECR"
-          aws ecr get-login-password --region "${REGION}" \
+          aws ecr get-login-password --region ${REGION} \
             | docker login --username AWS --password-stdin \
               "$(echo '${IMAGE_URI}' | cut -d/ -f1)"
           echo "==> Fetching MongoDB URI"
-          SECRET_JSON=$(aws secretsmanager get-secret-value \
-            --region "${REGION}" \
-            --secret-id "${MONGO_SECRET_ID}" \
+          SECRET_JSON=\$(aws secretsmanager get-secret-value \
+            --region ${REGION} \
+            --secret-id ${MONGO_SECRET_ID} \
             --query SecretString --output text)
-          MONGO_URI=$(echo "$SECRET_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['uri'])")
+          MONGO_URI=\$(echo "\$SECRET_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['uri'])")
           echo "==> Writing .env file"
           mkdir -p /opt/much-to-do
-          cat > /opt/much-to-do/.env <<ENV
+          cat > /opt/much-to-do/.env << EOF
           PORT=8080
-          MONGO_URI=${MONGO_URI}
+          MONGO_URI=\${MONGO_URI}
           DB_NAME=muchtodo
           JWT_SECRET_KEY=supersecretjwtkey2025AltSchool
           JWT_EXPIRATION_HOURS=72
@@ -174,9 +175,9 @@ jobs:
           ALLOWED_ORIGINS=https://d3rvbba5jz2f4m.cloudfront.net
           SECURE_COOKIE=false
           COOKIE_DOMAINS=d3rvbba5jz2f4m.cloudfront.net
-          ENV
+          EOF
           echo "==> Pulling image"
-          docker pull "${IMAGE_URI}"
+          docker pull ${IMAGE_URI}
           docker stop much-to-do-backend 2>/dev/null || true
           docker rm   much-to-do-backend 2>/dev/null || true
           echo "==> Starting container"
@@ -185,9 +186,9 @@ jobs:
             --restart unless-stopped \
             -p 8080:8080 \
             -v /opt/much-to-do/.env:/home/nonroot/.env:ro \
-            "${IMAGE_URI}"
+            ${IMAGE_URI}
           echo "==> Done"
-          SCRIPT
+          ENDOFSCRIPT
 
           USER_DATA=$(base64 -w 0 /tmp/userdata.sh)
 
