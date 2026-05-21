@@ -1,14 +1,14 @@
 import { render, screen } from '@testing-library/react';
 import App from './App';
 
-test('renders Much To Do heading', () => {
+test('renders Much To Do branding', () => {
   render(<App />);
-  const heading = screen.getByText(/Much To Do/i);
-  expect(heading).toBeTruthy();
+  const logos = screen.getAllByText(/Much To Do/i);
+  expect(logos.length).toBeGreaterThan(0);
 });
 
-test('renders login form by default', () => {
+test('renders sign in button', () => {
   render(<App />);
-  const loginButton = screen.getByRole('button', { name: /login/i });
-  expect(loginButton).toBeTruthy();
+  const btn = screen.getByRole('button', { name: /sign in/i });
+  expect(btn).toBeTruthy();
 });
