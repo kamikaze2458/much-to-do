@@ -4,9 +4,9 @@ import './App.css';
 
 const API = process.env.REACT_APP_API_URL || '';
 
-function Navbar({ token, onLogout, onSignIn }) {
+function Navbar({ dark, token, onLogout, onSignIn }) {
   return (
-    <nav className="navbar">
+    <nav className={`navbar ${dark ? 'dark' : 'light'}`}>
       <div className="navbar-inner">
         <div className="nav-logo">✦ Much To Do</div>
         <div className="nav-links">
@@ -79,6 +79,7 @@ export default function App() {
   const [lastName, setLastName] = useState('');
   const [token, setToken] = useState(localStorage.getItem('token') || '');
   const [todos, setTodos] = useState([]);
+  const [removingIds, setRemovingIds] = useState(new Set());
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -114,9 +115,7 @@ export default function App() {
     e.preventDefault();
     try {
       await axios.post(`${API}/auth/register`, { username, password, firstName, lastName });
-      setError(null);
-      setAuthTab('login');
-      setFirstName(''); setLastName('');
+      setError(null); setAuthTab('login'); setFirstName(''); setLastName('');
       alert('Registered! Please sign in.');
     } catch (err) { setError(err.response?.data?.error || 'Registration failed.'); }
   };
@@ -135,10 +134,14 @@ export default function App() {
   };
 
   const deleteTodo = async (id) => {
-    try {
-      await axios.delete(`${API}/tasks/${id}`, { headers: authHeaders });
-      setTodos(prev => prev.filter(t => (t.id || t._id) !== id));
-    } catch { setError('Failed to delete.'); }
+    setRemovingIds(prev => new Set([...prev, id]));
+    setTimeout(async () => {
+      try {
+        await axios.delete(`${API}/tasks/${id}`, { headers: authHeaders });
+        setTodos(prev => prev.filter(t => (t.id || t._id) !== id));
+      } catch { setError('Failed to delete.'); }
+      setRemovingIds(prev => { const n = new Set(prev); n.delete(id); return n; });
+    }, 250);
   };
 
   const toggleTodo = async (todo) => {
@@ -149,34 +152,31 @@ export default function App() {
     } catch { setError('Failed to update.'); }
   };
 
-  const pending = todos.filter(t => !t.completed).length;
+  const total = todos.length;
   const done = todos.filter(t => t.completed).length;
+  const pending = total - done;
+  const progress = total === 0 ? 0 : Math.round((done / total) * 100);
   const filtered = todos.filter(t => filter === 'all' ? true : filter === 'active' ? !t.completed : t.completed);
+
+  // Get time-based greeting
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
 
   if (!token) {
     return (
       <>
-        <Navbar token={null} onSignIn={() => setAuthTab('login')} />
-        <div className="app">
-          <div className="page-content">
+        <Navbar dark={false} token={null} onSignIn={() => setAuthTab('login')} />
+        <div className="app-auth">
+          <div className="auth-page-content">
             <div className="auth-wrapper">
               <div className="auth-hero">
                 <div className="auth-hero-badge">✦ Task Management Reimagined</div>
                 <h1>Get things<br /><span>done.</span></h1>
                 <p>A beautifully simple way to organize your day, track your progress, and accomplish more — without the clutter.</p>
                 <div className="auth-features">
-                  <div className="auth-feature">
-                    <div className="auth-feature-icon purple">⚡</div>
-                    <span>Instant task creation — just type and hit enter</span>
-                  </div>
-                  <div className="auth-feature">
-                    <div className="auth-feature-icon pink">✓</div>
-                    <span>Track progress with active and done filters</span>
-                  </div>
-                  <div className="auth-feature">
-                    <div className="auth-feature-icon teal">🔒</div>
-                    <span>Your tasks are private and securely stored</span>
-                  </div>
+                  <div className="auth-feature"><div className="auth-feature-icon purple">⚡</div><span>Instant task creation — just type and hit enter</span></div>
+                  <div className="auth-feature"><div className="auth-feature-icon pink">✓</div><span>Track progress with active and done filters</span></div>
+                  <div className="auth-feature"><div className="auth-feature-icon teal">🔒</div><span>Your tasks are private and securely stored</span></div>
                 </div>
                 <div className="auth-quote">
                   <p>"The secret of getting ahead is getting started."</p>
@@ -219,41 +219,60 @@ export default function App() {
 
   return (
     <>
-      <Navbar token={token} onLogout={logout} />
-      <div className="app">
-        <div className="page-content">
-          <header className="app-header">
-            <div className="app-logo">✦ Much To Do</div>
-            <div className="header-right">
-              <div className="stats">
-                <div className="stat"><div className="stat-num pending">{pending}</div><div className="stat-label">Active</div></div>
-                <div className="stat"><div className="stat-num done">{done}</div><div className="stat-label">Done</div></div>
-              </div>
-              <button className="btn-logout" onClick={logout}>Sign out</button>
+      <Navbar dark={true} token={token} onLogout={logout} />
+      <div className="app-tasks">
+        <div className="tasks-content">
+          {/* Welcome banner */}
+          <div className="welcome-banner">
+            <div className="welcome-text">
+              <h2>{greeting} 👋</h2>
+              <p>{pending === 0 ? "All done! You're on top of everything." : `You have ${pending} task${pending !== 1 ? 's' : ''} remaining today.`}</p>
             </div>
-          </header>
+            <div className="welcome-stats">
+              <div className="wstat"><div className="wstat-num p">{pending}</div><div className="wstat-label">Active</div></div>
+              <div className="wstat"><div className="wstat-num d">{done}</div><div className="wstat-label">Done</div></div>
+            </div>
+          </div>
+
+          {/* Progress bar */}
+          <div className="progress-wrap">
+            <div className="progress-label">
+              <span>Progress</span>
+              <span>{progress}% complete</span>
+            </div>
+            <div className="progress-bar">
+              <div className="progress-fill" style={{width: `${progress}%`}} />
+            </div>
+          </div>
+
           {error && <div className="error-banner" style={{width:'100%',maxWidth:640,marginBottom:16}}>{error}<button onClick={() => setError(null)}>×</button></div>}
+
           <form className="add-form" onSubmit={addTodo}>
-            <input value={input} onChange={e => setInput(e.target.value)} placeholder="Add a new task…" />
-            <button type="submit" className="btn-add">+ Add</button>
+            <input value={input} onChange={e => setInput(e.target.value)} placeholder="What needs to be done?" />
+            <button type="submit" className="btn-add">+ Add Task</button>
           </form>
+
           <div className="filters">
             {['all','active','done'].map(f => (
               <button key={f} className={`filter-btn ${filter === f ? 'active' : ''}`} onClick={() => setFilter(f)}>
-                {f.charAt(0).toUpperCase() + f.slice(1)}
+                {f === 'all' ? `All (${total})` : f === 'active' ? `Active (${pending})` : `Done (${done})`}
               </button>
             ))}
           </div>
+
           {loading ? (
             <div className="loading">{[1,2,3].map(i => <div key={i} className="skeleton" style={{animationDelay:`${i*0.1}s`}} />)}</div>
           ) : (
             <ul className="todo-list">
               {filtered.length === 0 ? (
-                <div className="empty-state"><span className="empty-icon">✦</span><p>No tasks here. Add one above!</p></div>
+                <div className="empty-state">
+                  <span className="empty-icon">{filter === 'done' ? '🎯' : '✦'}</span>
+                  <p>{filter === 'done' ? 'No completed tasks yet. Keep going!' : filter === 'active' ? 'All tasks done! Great work.' : 'No tasks yet. Add one above!'}</p>
+                </div>
               ) : filtered.map((t, i) => {
                 const id = t.id || t._id;
                 return (
-                  <li key={id} className={`todo-item ${t.completed ? 'done' : ''}`} style={{animationDelay:`${i*0.05}s`}}>
+                  <li key={id} className={`todo-item ${t.completed ? 'done' : ''} ${removingIds.has(id) ? 'removing' : ''}`} style={{animationDelay:`${i*0.04}s`}}>
                     <button className="todo-check" onClick={() => toggleTodo(t)}>{t.completed ? '✓' : ''}</button>
                     <span className="todo-title" onClick={() => toggleTodo(t)}>{t.title}</span>
                     <button className="btn-delete" onClick={() => deleteTodo(id)}>×</button>
