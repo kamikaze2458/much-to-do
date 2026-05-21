@@ -7,8 +7,8 @@ test('renders Much To Do branding', () => {
   expect(logos.length).toBeGreaterThan(0);
 });
 
-test('renders sign in button', () => {
+test('renders sign in buttons', () => {
   render(<App />);
-  const btn = screen.getByRole('button', { name: /sign in/i });
-  expect(btn).toBeTruthy();
+  const btns = screen.getAllByRole('button', { name: /sign in/i });
+  expect(btns.length).toBeGreaterThan(0);
 });
